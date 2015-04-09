@@ -1,35 +1,37 @@
 package eu.leads.processor.common.infinispan;
 
 import eu.leads.processor.common.StringConstants;
-import eu.leads.processor.common.utils.PrintUtilities;
 import eu.leads.processor.conf.LQPConfiguration;
 import org.infinispan.Cache;
+import org.infinispan.client.hotrod.TestHelper;
 import org.infinispan.configuration.cache.CacheMode;
 import org.infinispan.configuration.cache.Configuration;
 import org.infinispan.configuration.cache.ConfigurationBuilder;
 import org.infinispan.configuration.cache.Index;
-import org.infinispan.configuration.parsing.ConfigurationBuilderHolder;
-import org.infinispan.configuration.parsing.ParserRegistry;
+import org.infinispan.configuration.global.GlobalConfigurationBuilder;
 import org.infinispan.distexec.DefaultExecutorService;
 import org.infinispan.distexec.DistributedExecutorService;
 import org.infinispan.lifecycle.ComponentStatus;
-import org.infinispan.manager.DefaultCacheManager;
 import org.infinispan.manager.EmbeddedCacheManager;
 import org.infinispan.persistence.leveldb.configuration.LevelDBStoreConfiguration;
 import org.infinispan.persistence.leveldb.configuration.LevelDBStoreConfigurationBuilder;
 import org.infinispan.remoting.transport.Address;
+import org.infinispan.remoting.transport.Transport;
 import org.infinispan.server.hotrod.HotRodServer;
-import org.infinispan.server.hotrod.configuration.HotRodServerConfigurationBuilder;
+import org.infinispan.test.fwk.TestCacheManagerFactory;
+import org.infinispan.test.fwk.TransportFlags;
 import org.infinispan.transaction.TransactionMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+
+import static org.infinispan.server.hotrod.test.HotRodTestingUtil.hotRodCacheConfiguration;
+import static org.infinispan.test.AbstractCacheTest.getDefaultClusteredCacheConfig;
 
 /**
  * Created by vagvaz on 5/23/14.
@@ -42,13 +44,10 @@ import java.util.concurrent.Future;
  */
 public class ClusterInfinispanManager implements InfinispanManager {
 
-
   private Logger log = LoggerFactory.getLogger(this.getClass());
   private EmbeddedCacheManager manager;
   private String configurationFile;
   private HotRodServer server;
-  private int serverPort;
-  private String host;
   private Configuration defaultConfig = null;
   private Configuration defaultIndexConfig = null;
 
@@ -56,11 +55,9 @@ public class ClusterInfinispanManager implements InfinispanManager {
    * Constructs a new ClusterInfinispanManager.
    */
   public ClusterInfinispanManager() {
-    host = "0.0.0.0";
-    serverPort = 11222;
   }
 
-  public ClusterInfinispanManager(EmbeddedCacheManager manager) {
+   public ClusterInfinispanManager(EmbeddedCacheManager manager) {
     this.manager = manager;
     initDefaultCacheConfig();
   }
@@ -74,122 +71,76 @@ public class ClusterInfinispanManager implements InfinispanManager {
     this.configurationFile = configurationFile;
   }
 
-  /**
+   /**
    * {@inheritDoc}
    */
   @Override
   public void startManager(String configurationFile)  {
+     
+     try {
+        
+        ConfigurationBuilder builder = hotRodCacheConfiguration(
+              getDefaultClusteredCacheConfig(CacheMode.DIST_SYNC, false));
+        GlobalConfigurationBuilder gbuilder = GlobalConfigurationBuilder.defaultClusteredBuilder();
+        Transport transport = gbuilder.transport().getTransport();
+        gbuilder.transport().transport(transport);
+        gbuilder.transport().clusterName("cluster");
+        
+        TransportFlags transportFlags = new TransportFlags();
+        transportFlags.withReplay2(false);
 
+        manager = TestCacheManagerFactory.createClusteredCacheManager(gbuilder, builder, transportFlags);
+        server = TestHelper.startHotRodServer(manager);
 
-    ParserRegistry registry = new ParserRegistry();
-    ConfigurationBuilderHolder holder = null;
-    ConfigurationBuilder builder = null;
-    try {
-      if (configurationFile != null && !configurationFile.equals("")) {
-        holder = registry.parseFile(configurationFile);
+        builder = hotRodCacheConfiguration(getDefaultClusteredCacheConfig(CacheMode.DIST_SYNC, false));
+        builder.indexing()
+              .enable()
+              .index(Index.LOCAL)
+              .addProperty("default.directory_provider", "ram")
+              .addProperty("hibernate.search.default.exclusive_index_use","true")
+              .addProperty("hibernate.search.default.indexmanager","near-real-time")
+              .addProperty("hibernate.search.default.indexwriter.ram_buffer_size","128")
+              .addProperty("lucene_version", "LUCENE_CURRENT");
+        builder.clustering().hash().numOwners(1);
+        builder.jmxStatistics().enable();
+        builder.transaction().transactionMode(TransactionMode.TRANSACTIONAL);
+        Configuration configuration = builder.build();
+        manager.defineConfiguration("WebPage",configuration);
+        manager.getCache("WebPage", true);
 
-      } else {
-        System.err.println("\n\n\nUSING DEFAULT FILE ERROR\n\n");
-        holder = registry.parseFile(StringConstants.ISPN_CLUSTER_FILE);
-      }
-    }catch(IOException e){
-      e.printStackTrace();
-    }
-    manager = new DefaultCacheManager(holder, true);
-    //Join Infinispan Cluster
-    //      manager.start();
-    manager.getCache();
-    getPersisentCache("clustered");
-    getPersisentCache("pagerankCache");
-    getPersisentCache("approx_sum_cache");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".webpages");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".entities");
+        getPersisentCache("clustered");
+        getPersisentCache("pagerankCache");
+        getPersisentCache("approx_sum_cache");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".webpages");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".entities");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".content");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".page");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".urldirectory");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".urldirectory_ecom");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".page_core");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".keywords");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".resourcepart");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".site");
+        getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".adidas_keywords");
 
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".content");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".page");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".urldirectory");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".urldirectory_ecom");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".page_core");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".keywords");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".resourcepart");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".site");
-    getPersisentCache(StringConstants.DEFAULT_DATABASE_NAME+".adidas_keywords");
-//    getPersisentCache("WebPage");
-    Cache cache = manager.getCache("WebPage");
-    cache  = manager.getCache("Link");
-
-    if(LQPConfiguration.getConf().getBoolean("processor.start.hotrod"))
-    {
-      host = LQPConfiguration.getConf().getString("node.ip");
-      startHotRodServer(manager,host, serverPort);
-    }
-
-    //I might want to sleep here for a little while
-    PrintUtilities.printList(manager.getMembers());
-
-
-
-    System.out.println("We have started host:" + host);
-
+        System.out.println("Started on " + getHost()+":"+getServerPort());
+        
+     } catch (Throwable throwable) {
+        throwable.printStackTrace();  // TODO: Customise this generated block
+     }
+    
   }
 
   public HotRodServer getServer() {
     return server;
   }
 
-  public void setServer(HotRodServer server) {
-    this.server = server;
-  }
-
-  public int getServerPort() {
-    return serverPort;
-  }
-
-  public void setServerPort(int serverPort) {
-    this.serverPort = serverPort;
+   public int getServerPort() {
+    return server.getPort();
   }
 
   public String getHost() {
-    return host;
-  }
-
-  public void setHost(String host) {
-    this.host = host;
-  }
-
-  private void startHotRodServer(EmbeddedCacheManager targetManager, String localhost, int port) {
-    log.info("Starting HotRod Server");
-    System.err.println("Starting HotRod Server");
-    serverPort = port;
-    server = new HotRodServer();
-    boolean isStarted = false;
-    while (!isStarted) {
-      HotRodServerConfigurationBuilder serverConfigurationBuilder =
-        new HotRodServerConfigurationBuilder();
-      serverConfigurationBuilder.host(localhost).port(serverPort).defaultCacheName("defaultCache");
-      //                 .keyValueFilterFactory("leads-processor-filter-factory",new LeadsProcessorKeyValueFilterFactory(manager))
-      //                 .converterFactory("leads-processor-converter-factory",new LeadsProcessorConverterFactory());
-
-      try {
-        server.start(serverConfigurationBuilder.build(), targetManager);
-        server.addCacheEventConverterFactory("leads-processor-converter-factory", new LeadsProcessorConverterFactory());
-        server.addCacheEventFilterFactory("leads-processor-filter-factory", new
-                                                                              LeadsProcessorKeyValueFilterFactory(manager));
-        isStarted = true;
-      } catch (Exception e) {
-        System.out.println("Exception e " + e.getClass().getCanonicalName() + e.getMessage());
-        //            if(e == null){
-        //               System.out.println(port + " " +)
-        //            }
-        serverPort++;
-        isStarted = false;
-        try {
-          Thread.sleep(300);
-        } catch (InterruptedException e1) {
-          e1.printStackTrace();
-        }
-      }
-    }
+    return server.getHost();
   }
 
   /**
